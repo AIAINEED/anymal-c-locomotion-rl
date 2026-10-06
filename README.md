@@ -75,6 +75,27 @@
 
 **6/6 跑满 20 秒不摔，前进速度跟踪误差平均 0.036 m/s。** 视频见 `assets/sim2sim.mp4`。
 
+### 推力鲁棒性评估
+
+对训练好的策略施加**周期性外部推力扰动**（每 2–4 秒一次 ±v m/s 的速度突变，模拟推搡/磕碰），
+统计 20 秒 episode 内的摔倒率与速度跟踪误差（64 并行环境，每档约 200 个 episode）：
+
+![robustness](assets/robustness_curve.png)
+
+| 推力强度 (±m/s) | episodes | 摔倒数 | **摔倒率** | 平均跟踪误差 |
+|---|---|---|---|---|
+| 0.0（基线） | 192 | 3 | **1.6%** | 0.069 m/s |
+| 0.5 | 193 | 8 | **4.2%** | 0.080 m/s |
+| 1.0 | 194 | 22 | **11.3%** | 0.098 m/s |
+| 2.0 | 281 | 195 | **69.4%** | 0.171 m/s |
+
+**结论**：策略在 ±0.5 m/s 扰动下仍有 **96%** 的存活率，±1.0 m/s 下保持 **89%**，
+但在 ±2.0 m/s（约为最大指令速度的 2 倍）时下降到 **31%**，且跟踪误差翻倍 ——
+说明该策略具备中等强度扰动的鲁棒性，但**未显式训练抗强扰动**（训练时推力间隔为 10–15 秒、
+幅度仅 ±0.5 m/s）。这也直接给出了下一步改进方向：加大域随机化强度。
+
+> 原始数据：`robustness.csv` ｜ 评估脚本：`robustness_eval.py`
+
 ---
 
 ## 3. 系统架构
@@ -187,9 +208,13 @@ WSL2 路线已完整验证不可行：`gpu.foundation` 无法创建 GPU 设备�
 - [x] TensorBoard 全程指标记录
 - [x] ONNX 导出 + 数值一致性验证（9.5e-07）
 - [x] **MuJoCo 跨引擎 sim2sim 验证（6/6，误差 0.036 m/s）**
+- [x] **推力鲁棒性量化评估**（4 档扰动强度，约 860 个 episode；输出鲁棒性衰减曲线）
 
 **未完成（后续路线，按优先级）**
 
+- [ ] **抗扰动训练**：按上面的评估结论，把 `push_robot` 间隔缩短到 2–4 秒、幅度提到 ±1.5–2.0 m/s
+      重训一版，与当前策略做"鲁棒性 vs 跟踪性能"的对比实验（预计 1.5 小时/次）
+- [ ] 崎岖地形泛化：换 `Isaac-Velocity-Rough-Anymal-C-v0` 训练，对比平地/崎岖地形表现
 - [ ] **ROS2 部署**：把 `policy.onnx` 封装为 ROS2 节点
   - 接口设计：订阅 `/cmd_vel`（`geometry_msgs/Twist`）与 `/joint_states`（`sensor_msgs/JointState`），
     发布 `/joint_command`；控制频率与训练一致（**50 Hz**），节点内维护 `last_action` 与观测拼装
@@ -211,6 +236,8 @@ anymal_rl_project/
 ├── .gitignore
 ├── anymal_sim2sim.py            # 跨引擎验证脚本（Isaac Lab 训练策略 → MuJoCo）
 ├── export_onnx.py               # checkpoint → ONNX 导出 + 数值验证
+├── robustness_eval.py           # 推力鲁棒性评估（多档强度 → 摔倒率/跟踪误差）
+├── robustness.csv               # 鲁棒性评估原始数据
 ├── policy.onnx                  # 导出的策略（48→12 全连接 ELU 网络）
 ├── assets/
 │   ├── curve_reward.png         # 训练曲线：总奖励
@@ -218,6 +245,7 @@ anymal_rl_project/
 │   ├── curve_episode_length.png # 训练曲线：episode 长度
 │   ├── isaac_sim_4096_robots.png# Isaac Sim 训练现场
 │   ├── mujoco_walking.png       # MuJoCo sim2sim 行走
+│   ├── robustness_curve.png     # 鲁棒性衰减曲线
 │   └── sim2sim.mp4              # sim2sim 视频（20 秒行走）
 └── docs/
     └── wsl2-isaac-failure-report.md   # WSL2 路线不可行性的完整排查记录（见 6.4 节）
@@ -232,6 +260,7 @@ anymal_rl_project/
 | 为什么用 PPO 而不是 SAC/TD3？ | 连续控制 + 大规模并行采样下 PPO 稳定且吞吐高；4096 并行环境让 on-policy 的样本效率劣势被摊薄 |
 | 观测为什么没有归一化？ | 本任务观测已是有界物理量（重力方向、相对关节角、指令），训练时用均匀噪声做域随机化即可；导出链路因此更简单 |
 | 怎么证明策略不是"记住"了 PhysX？ | 换 MuJoCo 引擎后 6/6 跑满、速度跟踪误差 0.036 m/s，说明策略学到的是控制律而非引擎特性 |
+| **你的策略鲁棒吗？** | **有量化答案**：±0.5 m/s 外部推力下 **96%** 存活、±1.0 m/s 下 **89%**、±2.0 m/s 下 **31%**（约 860 个 episode 统计）；训练时扰动仅 ±0.5 m/s、间隔 10–15 秒，因此抗强扰动是明确的下一步改进方向 |
 | sim2sim 里最大的误差来源？ | 执行器模型：训练用 ActuatorNet LSTM，验证只能用 PD 近似（kp=120/kd=5） |
 | 为什么不直接在 Linux 上做？ | 目标机器只有 Windows；WSL2 已被官方确认不支持 Isaac Sim（GPU 设备创建失败），因此走 Windows 原生 + 官方验证驱动 580.88 |
 | 上真机还差什么？ | ① ROS2 节点与 50 Hz 实时控制 ② 真机状态估计（速度/重力方向） ③ 执行器力矩接口与安全限幅 |
