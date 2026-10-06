@@ -66,7 +66,7 @@
 | ![reward](assets/curve_reward.png) | ![track](assets/curve_track_lin_vel.png) |
 | ![episode](assets/curve_episode_length.png) | |
 
-（灰色是 300 轮欠训练基线：reward 1.1、episode 134 步、跟踪 0.007；蓝色是完整训练）
+（灰色是欠训练基线：**256 环境 × 300 轮**，reward 1.1、episode 134 步、跟踪 0.007；蓝色是完整训练：1024 环境 × 4000 轮）
 
 ### 训练规模
 
@@ -74,10 +74,12 @@
 |---|---|
 | 并行环境 | 1024 |
 | 迭代轮数 | 4000（× 24 步/轮 = 96000 策略步） |
-| **总环境步数** | **≈ 9800 万步** |
+| **总环境步数** | **≈ 9800 万步**（1024 × 24 × 4000） |
 | 训练耗时 | **1.29 小时**（RTX 4060 8GB） |
 | 算法 | PPO（skrl）：rollouts 24 / epochs 5 / minibatches 4 / γ 0.99 / λ 0.95 / lr 1e-3（KLAdaptiveLR） |
 | 网络 | Actor 与 Critic 各为 3 层 MLP（128-128-128，ELU） |
+
+> 训练配置可在运行目录的 `params/env.yaml` 与 `params/agent.yaml` 中核对（本项目全部数据均由该文件与评估脚本复现）。
 
 ### Isaac Sim 中的训练现场
 
