@@ -45,6 +45,55 @@
 
 ![deployment limits](../assets/deployment_limits.png)
 
+### 跨平台复现（Windows 原生 vs WSL2/Ubuntu）
+
+同一份代码、同一随机种子，在两套环境各跑 15 个 episode：
+
+| 观测延迟 | Windows 摔倒率 / 跟踪误差 | WSL2 摔倒率 / 跟踪误差 | 一致性 |
+|---|---|---|---|
+| 0 ms | 0% / 0.0749 | 0% / **0.0749** | 逐位一致 |
+| 20 ms | 0% / 0.0727 | 0% / **0.0727** | 逐位一致 |
+| 40 ms | 0% / 0.0741 | 0% / **0.0741** | 逐位一致 |
+| 60 ms | 0% / 0.0919 | 0% / **0.0919** | 逐位一致 |
+| 80 ms | 26.7% / 0.164 | 13.3% / 0.127 | 混沌区差异 |
+| 120 ms | 73.3% / 0.222 | 86.7% / 0.325 | 混沌区差异 |
+| 160 ms | 100% / 0.275 | 100% / 0.288 | 一致（都失效） |
+
+* 延迟 ≤ 60 ms 时两平台结果**完全一致** → 核心逻辑（观测拼装 / 动作转换 / 时序）跨平台等价 ✓
+* 超过延迟容限后进入**混沌区**：摔倒与否对浮点/编译器差异敏感，单点数值有波动属正常 ——
+  因此结论应按**阈值**表述（"容限 ≈ 80 ms"），而非纠结单点数值。
+* 算力：WSL2 上推理 p99 **0.055 ms**、整环 p99 **0.38 ms**（占 20 ms 周期的 **1.9%**）。
+
+### ROS2 闭环实测（第②层：WSL2 + ROS2 Humble，两节点通过话题通信）
+
+两个节点分别运行（`ros2_sim_node.py` 被控对象 + `ros2_policy_node.py` 控制器），实测：
+
+| 指标 | 实测值 | 说明 |
+|---|---|---|
+| 控制周期（策略节点自测） | 均值 **20.00 ms**，p99 **20.50 ms** | 抖动 2.5%，守住 50 Hz |
+| 单次策略推理 | 均值 **0.09 ms**，p99 **0.16 ms** | 占 20 ms 周期的 **0.45%** |
+| `/joint_command` 发布频率（`ros2 topic hz`） | **49.3–49.4 Hz** | 略低于 50 Hz，来自 ROS2 timer + DDS 开销 |
+| 话题 | `/joint_states` `/imu` `/odom` `/cmd_vel` `/joint_command` | 均为预期类型 |
+
+**一个真实部署教训**：`ros2 topic hz` 观察到一次 **0.596 s** 的发布间隔离群（WSL 调度抖动；std dev 12 ms 说明整体稳定）。
+→ 真机部署必须加入**看门狗/心跳监控**：控制周期超时立即进入安全状态，不能盲目继续下发指令。
+
+**复现命令**：
+
+```bash
+# 终端 1
+source /opt/ros/humble/setup.bash && cd ~/anymal_deploy
+python3 ros2_sim_node.py --model ~/mujoco_menagerie/scene.xml
+
+# 终端 2
+source /opt/ros/humble/setup.bash && cd ~/anymal_deploy
+python3 ros2_policy_node.py --policy policy.onnx --cmd 0.8,0,0
+
+# 终端 3
+ros2 topic hz /joint_command
+ros2 topic echo /joint_states --once
+```
+
 ---
 
 ## 2. 文件
