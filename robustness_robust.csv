@@ -1,0 +1,5 @@
+push_intensity_mps,episodes,falls,timeouts,fall_rate,mean_abs_vx_err
+0.0,192,0,192,0.0,0.0703
+0.5,192,1,191,0.0052,0.0765
+1.0,192,0,192,0.0,0.0921
+2.0,194,18,176,0.0928,0.1422
