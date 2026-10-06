@@ -140,10 +140,10 @@ source /opt/ros/humble/setup.bash
 pip install numpy mujoco onnxruntime
 
 # ③ 准备文件：把 deploy/ 目录、policy.onnx、MuJoCo 的 anymal_c 模型放进 WSL
-#    （Windows 盘在 WSL 下是 /mnt/c、/mnt/e）
-mkdir -p ~/anymal_deploy && cp -r /mnt/c/Users/DAI\ FEI/Desktop/anymal_rl_project/deploy/* ~/anymal_deploy/
-cp /mnt/c/Users/DAI\ FEI/Desktop/anymal_rl_project/policy.onnx ~/anymal_deploy/
-# anymal_c 模型（解压好的那个目录）
+#    Windows 盘在 WSL 下是 /mnt/c、/mnt/e；<WIN_PROJECT> = 仓库在 Windows 上的路径，
+#    例如 /mnt/c/Users/<用户名>/Desktop/anymal-c-locomotion-rl
+mkdir -p ~/anymal_deploy && cp -r "<WIN_PROJECT>/deploy/"* ~/anymal_deploy/
+cp "<WIN_PROJECT>/policy.onnx" ~/anymal_deploy/
 cp -r /mnt/e/mujoco_menagerie ~/mujoco_menagerie
 
 # ④ 起被控对象节点（终端 1）

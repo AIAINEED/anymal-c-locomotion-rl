@@ -1,5 +1,13 @@
 # ANYmal-C 四足运动控制强化学习 —— 从 Isaac Lab 到 MuJoCo 的跨引擎验证
 
+**MuJoCo 跨引擎验证**（同一份 ONNX 权重，从 PhysX 换到 MuJoCo）：
+
+![MuJoCo sim2sim](assets/hero_sim2sim.gif)
+
+**崎岖地形泛化**（观测 235 维，含地形高度扫描）：
+
+![rough terrain](assets/hero_rough_terrain.gif)
+
 > **English**: PPO-based velocity-tracking locomotion policy for the ANYmal-C quadruped, trained in
 > Isaac Lab (Isaac Sim 5.1 / PhysX, 1024 parallel environments, ~98M env steps), exported to ONNX
 > (max numerical deviation 9.5e-07) and re-validated in **MuJoCo** — a different physics engine —
@@ -10,13 +18,36 @@
 
 ---
 
+## 0. 任务来源与本项目工作（先读这一节）
+
+**任务来源**：训练使用 **Isaac Lab 官方自带任务** `Isaac-Velocity-Flat-Anymal-C-v0`
+（任务定义、环境、**奖励函数与 PPO 实现均来自官方**，本项目未修改算法和奖励函数；
+训练超参与迭代轮数也为标准配置）。
+
+**因此，"训练"本身是基准复现，不是本项目的贡献。本项目的工作是下面这些：**
+
+| # | 工作 | 对应章节 |
+|---|---|---|
+| 1 | 训练环境搭建与基准复现（Windows 原生 + 驱动/依赖问题排查） | §2、§6.4 |
+| 2 | ONNX 导出与数值一致性验证（9.5e-07） | §2 |
+| 3 | **MuJoCo 跨引擎验证**（同一策略换物理引擎，6/6 通过） | §2 |
+| 4 | **外部扰动鲁棒性评估 + 抗扰动训练消融**（69.4% → 9.3%） | §2 |
+| 5 | 地形泛化对比（平地 vs 崎岖地形） | §2 |
+| 6 | **ROS2 部署栈 + 部署边界量化**（延迟容限、估计噪声敏感性） | §2、`deploy/` |
+| 7 | 部署栈跨平台复现（Windows 原生 / WSL2） | `deploy/README.md` |
+
+---
+
 ## 1. 项目简介
 
 用强化学习训练 ANYmal-C（ANYbotics 工业四足机器人）**速度跟踪**策略：随机下达前后/侧向/转向速度指令，
-策略输出 12 个关节的目标角度，使机器人平稳跟踪指令且不摔倒。
+策略输出 12 个关节的目标角度，使机器人平稳跟踪指令且不摔倒（任务来自 Isaac Lab 官方，见第 0 节）。
 
-项目重点不止"训出来"，而是走完 **训练 → 量化评估 → 模型导出 → 跨引擎验证** 这条链，
-并解决其中三个真实的工程问题（见第 6 节）。
+项目重点不在"训出来"，而在于把这条链走完并**逐项量化**：
+
+**训练（官方基准）→ ONNX 导出 → MuJoCo 跨引擎验证 → 扰动鲁棒性评估与消融 → 地形泛化 → ROS2 部署栈与边界量化**
+
+其中三个真实的工程问题（跨引擎关节顺序、执行器模型差异、MuJoCo 坐标系 API 陷阱）见第 6 节。
 
 ---
 
@@ -26,7 +57,7 @@
 
 | 指标 | 数值 | 说明 |
 |---|---|---|
-| `Reward/Total reward (max)` | **24.88** | 参考实现区间 20–30 |
+| `Reward/Total reward (max)` | **24.88** | 官方参考实现区间 20–30（任务与奖励均来自 Isaac Lab 官方） |
 | `Episode_Reward/track_lin_vel_xy_exp` | **0.8924** | 速度跟踪项接近满分（上限 1.0） |
 | `Episode/Total timesteps` | **1000 / 1000** | 撑满 20 秒 episode，一次不摔 |
 
@@ -50,7 +81,7 @@
 
 ### Isaac Sim 中的训练现场
 
-![isaac](assets/isaac_sim_4096_robots.png)
+![isaac](assets/isaac_sim_training_scene.png)
 
 ### 模型导出
 
@@ -239,22 +270,36 @@ Isaac Sim 5.1 (PhysX)                      MuJoCo 3.14
 
 ## 5. 复现步骤
 
+环境变量（下同）：
+
+| 占位符 | 含义 |
+|---|---|
+| `<ISAACLAB_PATH>` | Isaac Lab 安装目录（含 `isaaclab.bat`），例如 `E:\IsaacLab` |
+| `<PROJECT_PATH>` | 本仓库目录 |
+| `<MENAGERIE_PATH>` | `mujoco_menagerie` 解压目录（含 `anybotics_anymal_c/`） |
+
 ```powershell
 # 1) 训练（约 1.3 小时）
-E:\IsaacLab\isaaclab.bat -p scripts\reinforcement_learning\skrl\train.py `
+<ISAACLAB_PATH>\isaaclab.bat -p scripts\reinforcement_learning\skrl\train.py `
     --task=Isaac-Velocity-Flat-Anymal-C-v0 --headless --num_envs 1024 --max_iterations 4000
 
 # 2) 看曲线
-E:\IsaacLab\_isaac_sim\kit\python\Scripts\tensorboard.exe --logdir E:\IsaacLab\logs\skrl --port 6006
+<ISAACLAB_PATH>\_isaac_sim\kit\python\Scripts\tensorboard.exe --logdir <ISAACLAB_PATH>\logs\skrl --port 6006
 
 # 3) 导出 ONNX（脚本见 export_onnx.py，误差 9.5e-07）
-E:\IsaacLab\_isaac_sim\kit\python\python.exe export_onnx.py
+<ISAACLAB_PATH>\_isaac_sim\kit\python\python.exe <PROJECT_PATH>\export_onnx.py
 
 # 4) 跨引擎验证 + 录像
-E:\IsaacLab\_isaac_sim\kit\python\python.exe anymal_sim2sim.py `
-    --model <mujoco_menagerie>\anybotics_anymal_c\scene.xml `
-    --policy policy.onnx --video sim2sim.mp4
+<ISAACLAB_PATH>\_isaac_sim\kit\python\python.exe <PROJECT_PATH>\anymal_sim2sim.py `
+    --model <MENAGERIE_PATH>\anybotics_anymal_c\scene.xml `
+    --policy <PROJECT_PATH>\policy.onnx --video sim2sim.mp4
+
+# 5) 推力鲁棒性评估（每档一个强度，结果追加到 CSV）
+<ISAACLAB_PATH>\isaaclab.bat -p <PROJECT_PATH>\robustness_eval.py --headless `
+    --actor <ISAACLAB_PATH>\deploy\actor.pt --intensity 0.0 --num_envs 64 --episodes 3 --csv robustness.csv
 ```
+
+**部署栈（第③阶段）**：见 [`deploy/README.md`](deploy/README.md)（WSL2 + ROS2 Humble 的完整步骤）。
 
 ---
 
@@ -295,7 +340,8 @@ WSL2 路线已完整验证不可行：`gpu.foundation` 无法创建 GPU 设备�
 且 Warp 无法创建 CUDA stream；NVIDIA 官方明确 **[Isaac Sim 不支持在 WSL2 下运行](https://forums.developer.nvidia.com/t/is-it-possible-to-run-isaac-sim-in-wsl2/349609)**。
 改用 **Windows 原生 + Isaac Sim 二进制版**（D3D12）后全部正常。
 另外：驱动必须使用官方验证版本 **580.88** —— 用更新的 610.88 时 RTX 渲染器会在启动时崩溃
-（`rtx.scenedb.plugin`），且**无头训练正常、一启用渲染就崩**，排查过程见 `IsaacLab_WSL2_问题记录.md`。
+（`rtx.scenedb.plugin`），且**无头训练正常、一启用渲染就崩**，完整排查记录见
+[`docs/wsl2-isaac-failure-report.md`](docs/wsl2-isaac-failure-report.md)。
 
 ---
 
@@ -319,22 +365,19 @@ WSL2 路线已完整验证不可行：`gpu.foundation` 无法创建 GPU 设备�
 
 - [ ] **真机验证（第④阶段）**：需要 ANYmal-C 硬件（ANYdrive 力矩接口 + 实际状态估计器）；
       接口、频率、算力、延迟容限已在第③阶段量化，属于"只差硬件"
-- [ ] 训练阶段进一步加大域随机化（地形 + 推力 + 观测延迟联合随机化），提升实际部署余量
-  - 接口设计：订阅 `/cmd_vel`（`geometry_msgs/Twist`）与 `/joint_states`（`sensor_msgs/JointState`），
-    发布 `/joint_command`；控制频率与训练一致（**50 Hz**），节点内维护 `last_action` 与观测拼装
-  - 分三步走：① Isaac Sim/ROS2 桥接闭环 → ② Gazebo 仿真闭环 → ③ 真机（需 ANYdrive 力矩接口 + 状态估计）
-- [ ] 鲁棒性实验：地形随机化、外部推力扰动下的成功率对比
-- [ ] 训练超参消融（num_envs / 学习率 / 熵系数）
+- [ ] 训练阶段进一步加大域随机化（地形 + 推力 + 观测延迟**联合**随机化），提升实际部署余量
+- [ ] 奖励权重敏感性实验（`dof_torques_l2` / `feet_air_time` 等单变量对比）
+- [ ] PPO 超参单变量实验（熵系数 / 学习率 / `num_envs` 的样本效率对比）
 
-> **说明**：本项目在仿真层面完成，未接入真机。跨引擎 sim2sim 已覆盖 sim2real 链条的前两步
-> （模型导出 + 物理引擎泛化），ROS2 接口设计与验证计划见上。
+> **说明**：本项目在仿真层面完成，**未接入真机**。跨引擎 sim2sim 与 ROS2 部署栈已覆盖 sim2real 链条的前三步
+> （模型导出 → 物理引擎泛化 → 部署就绪与边界量化），第④步需要硬件接入。
 
 ---
 
 ## 8. 文件结构
 
 ```
-anymal_rl_project/
+anymal-c-locomotion-rl/
 ├── README.md                    # 本文档
 ├── requirements.txt             # 依赖与版本（含 pillow 版本陷阱说明）
 ├── .gitignore
@@ -351,13 +394,16 @@ anymal_rl_project/
 │   ├── closed_loop.py           #   本地闭环评估：延迟容限、估计噪声、时序
 │   ├── ros2_policy_node.py      #   ROS2 策略节点（50 Hz）
 │   ├── ros2_sim_node.py         #   ROS2 被控对象节点（MuJoCo 模拟真机）
-│   └── deploy_eval.csv          #   部署评估原始数据
+│   ├── deploy_eval.csv          #   部署评估原始数据（Windows）
+│   └── deploy_eval_wsl.csv      #   部署评估原始数据（WSL2，跨平台复现）
 ├── assets/
+│   ├── hero_sim2sim.gif         # 首屏：MuJoCo 跨引擎行走
+│   ├── hero_rough_terrain.gif   # 首屏：崎岖地形行走
 │   ├── curve_reward.png         # 训练曲线：总奖励
 │   ├── curve_track_lin_vel.png  # 训练曲线：速度跟踪
 │   ├── curve_episode_length.png # 训练曲线：episode 长度
-│   ├── isaac_sim_4096_robots.png# Isaac Sim 训练现场
-│   ├── mujoco_walking.png       # MuJoCo sim2sim 行走
+│   ├── isaac_sim_training_scene.png  # Isaac Sim 训练现场
+│   ├── mujoco_walking.png       # MuJoCo sim2sim 行走（静帧）
 │   ├── robustness_curve.png     # 鲁棒性衰减曲线（原始策略）
 │   ├── robustness_ablation.png  # 消融对比：原始 vs 抗扰动训练
 │   ├── deployment_limits.png    # 部署边界：观测延迟容限 + 估计噪声敏感性
@@ -370,26 +416,11 @@ anymal_rl_project/
 
 ---
 
-## 9. 常见提问准备（面试自测）
-
-| 问题 | 回答要点 |
-|---|---|
-| 为什么用 PPO 而不是 SAC/TD3？ | 连续控制 + 大规模并行采样下 PPO 稳定且吞吐高；4096 并行环境让 on-policy 的样本效率劣势被摊薄 |
-| 观测为什么没有归一化？ | 本任务观测已是有界物理量（重力方向、相对关节角、指令），训练时用均匀噪声做域随机化即可；导出链路因此更简单 |
-| 怎么证明策略不是"记住"了 PhysX？ | 换 MuJoCo 引擎后 6/6 跑满、速度跟踪误差 0.036 m/s，说明策略学到的是控制律而非引擎特性 |
-| **你的策略鲁棒吗？** | **有量化答案，而且做了消融**：原策略 ±0.5 / ±1.0 / ±2.0 m/s 扰动下摔倒率 4.2% / 11.3% / **69.4%**；把训练扰动强度提高（幅度 ×3、频率 ×4）重训后降到 0.5% / 0% / **9.3%**，跟踪误差无损失（0.069 → 0.070 m/s）—— 说明瓶颈是训练分布覆盖不足，不是策略容量 |
-| 换地形还能用吗？ | 同一配置直接在崎岖地形（观测 48 → 235，加入地形高度扫描）从头训练即可，平均存活率达标称的 88%；但**平地权重无法直接迁移**（输入层维度不匹配，且平地策略缺乏地形感知） |
-| sim2sim 里最大的误差来源？ | 执行器模型：训练用 ActuatorNet LSTM，验证只能用 PD 近似（kp=120/kd=5） |
-| 为什么不直接在 Linux 上做？ | 目标机器只有 Windows；WSL2 已被官方确认不支持 Isaac Sim（GPU 设备创建失败），因此走 Windows 原生 + 官方验证驱动 580.88 |
-| 上真机还差什么？ | ① **ROS2 实时控制已就绪**（50 Hz，整环 p99 1.2 ms，占周期 6%）② **状态估计**：`base_lin_vel` 真机无法直接测量，需估计器 —— 已量化误差敏感性（σ=0.1 m/s 即掉 6.7% 存活）③ 执行器力矩接口与安全限幅（Isaac 用 ActuatorNet LSTM，真机是 ANYdrive）④ 硬件本身 |
-| 部署的最大风险是什么？ | **观测延迟**：实测 60 ms 内无退化、80 ms 起摔倒率 27%、160 ms 完全失效 —— 因此"控制周期 + 感知/估计链路"总延迟必须压到 60 ms 内 |
-
----
-
-## 10. 参考
+## 9. 参考
 
 - Isaac Lab: <https://github.com/isaac-sim/IsaacLab>
 - skrl: <https://skrl.readthedocs.io>
 - MuJoCo / mujoco_menagerie (ANYmal-C 模型): <https://github.com/google-deepmind/mujoco_menagerie>
 - Isaac Sim 5.1 系统需求（驱动 580.88）: <https://docs.isaacsim.omniverse.nvidia.com/5.1.0/installation/requirements.html>
 - Isaac Sim 不支持 WSL2（官方说明）: <https://forums.developer.nvidia.com/t/is-it-possible-to-run-isaac-sim-in-wsl2/349609>
+
