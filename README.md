@@ -4,6 +4,9 @@
 > Isaac Lab (Isaac Sim 5.1 / PhysX, 1024 parallel environments, ~98M env steps), exported to ONNX
 > (max numerical deviation 9.5e-07) and re-validated in **MuJoCo** — a different physics engine —
 > achieving 6/6 full 20-second episodes with a mean velocity-tracking error of **0.036 m/s**.
+> Includes perturbation-robustness ablation (fall rate 69.4% → 9.3% at ±2.0 m/s), rough-terrain
+> generalization, and a **ROS2 deployment stack** with quantified hardware limits (inference p99
+> 0.26 ms; observation-delay tolerance ≈ 80 ms).
 
 ---
 
@@ -147,6 +150,48 @@
 2. 代价是速度跟踪精度下降约 **21%**、平均奖励下降 **32%**，与"复杂地形上需以跟踪精度换取稳定性"的预期一致；
 3. 观测维度的变化（48 → 235，引入地形高度扫描）是策略能适应地形的前提 —— 这也是崎岖地形任务**无法直接复用平地权重**的原因。
 
+### 部署栈：ROS2 + 硬件约束验证（第 ③ 阶段）
+
+把策略做成**可与真机对接的实时控制器**，并在仿真里量化部署边界（完整说明见 [`deploy/README.md`](deploy/README.md)）：
+
+![deployment](assets/deployment_limits.png)
+
+**算力与实时性**（ONNX / CPU，单次推理）：
+
+| 项 | 数值 |
+|---|---|
+| 策略推理 p99 | **0.26 ms** |
+| 整环耗时（推理 + 4 步物理）p99 | **1.2 ms** |
+| 占 20 ms 控制周期 | **≈ 6%** ✅ |
+
+**观测延迟容限**（每档 15 个 20 秒 episode）：
+
+| 延迟 | 0 / 20 / 40 / 60 ms | 80 ms | 120 ms | 160 ms |
+|---|---|---|---|---|
+| 摔倒率 | **0%** | 26.7% | 73.3% | 100% |
+| 跟踪误差 | 0.073–0.092 m/s | 0.164 | 0.222 | 0.275 |
+
+→ **延迟容限 ≈ 80 ms**：真机部署时「控制周期 + 感知/估计链路」总延迟应控制在 **60 ms 内**。
+
+**状态估计误差敏感性**（真机上 `base_lin_vel` 来自状态估计器，是主要误差源）：
+
+| 估计噪声 σ | 0（基线） | 0.1 m/s | 0.2 m/s | 0.3 m/s |
+|---|---|---|---|---|
+| 摔倒率 | 0% | 6.7% | 13.3% | 13.3% |
+| 跟踪误差 | 0.073 | 0.115 | 0.157 | 0.192 |
+
+→ 速度估计误差 σ ≥ 0.1 m/s 即产生可观测损失，真机部署应优先保证状态估计精度。
+
+**ROS2 接口**（`deploy/ros2_policy_node.py` + `deploy/ros2_sim_node.py`，MuJoCo 扮演被控对象）：
+
+| 话题 | 类型 | 说明 |
+|---|---|---|
+| `/joint_states` | `sensor_msgs/JointState` | 12 关节角/角速度（按腿分组顺序） |
+| `/imu` | `sensor_msgs/Imu` | 角速度 + 姿态 → 重力方向 |
+| `/odom` | `nav_msgs/Odometry` | **机体系线速度**（真机由状态估计器提供） |
+| `/cmd_vel` | `geometry_msgs/Twist` | vx / vy / wz 指令 |
+| `/joint_command` | `sensor_msgs/JointState` | 12 关节目标角（50 Hz） |
+
 ---
 
 ## 3. 系统架构
@@ -262,11 +307,14 @@ WSL2 路线已完整验证不可行：`gpu.foundation` 无法创建 GPU 设备�
 - [x] **推力鲁棒性量化评估**（4 档扰动强度，约 860 个 episode；输出鲁棒性衰减曲线）
 - [x] **抗扰动训练消融实验**：加大域随机化后，±2.0 m/s 扰动下摔倒率 **69.4% → 9.3%**，且跟踪性能无损失
 - [x] **地形泛化**：同一配置在崎岖地形（观测 235 维）从头训练，平均存活率达标称的 88%，代价是跟踪精度 −21%
+- [x] **部署就绪栈（第③阶段）**：ROS2 节点（50 Hz，`/joint_states` `/imu` `/odom` `/cmd_vel` → `/joint_command`）+ MuJoCo 被控对象闭环；
+      实测推理 p99 **0.26 ms**（占 20 ms 周期 6%）、**观测延迟容限 ≈ 80 ms**、量化了状态估计噪声敏感性
 
-**未完成（后续路线，按优先级）**
+**未完成（后续路线）**
 
-- [ ] **ROS2 部署**：把 `policy.onnx` 封装为 ROS2 节点（50 Hz），并用 MuJoCo 充当被控对象跑通闭环
-- [ ] 部署阶段鲁棒性：观测延迟（5–20 ms）、关节指令饱和与噪声下的表现
+- [ ] **真机验证（第④阶段）**：需要 ANYmal-C 硬件（ANYdrive 力矩接口 + 实际状态估计器）；
+      接口、频率、算力、延迟容限已在第③阶段量化，属于"只差硬件"
+- [ ] 训练阶段进一步加大域随机化（地形 + 推力 + 观测延迟联合随机化），提升实际部署余量
   - 接口设计：订阅 `/cmd_vel`（`geometry_msgs/Twist`）与 `/joint_states`（`sensor_msgs/JointState`），
     发布 `/joint_command`；控制频率与训练一致（**50 Hz**），节点内维护 `last_action` 与观测拼装
   - 分三步走：① Isaac Sim/ROS2 桥接闭环 → ② Gazebo 仿真闭环 → ③ 真机（需 ANYdrive 力矩接口 + 状态估计）
@@ -291,6 +339,14 @@ anymal_rl_project/
 ├── robustness.csv               # 鲁棒性数据：原始策略
 ├── robustness_robust.csv        # 鲁棒性数据：抗扰动策略
 ├── policy.onnx                  # 导出的策略（48→12 全连接 ELU 网络）
+├── deploy/                      # 【第③阶段】部署栈：ROS2 节点 + 硬件约束验证
+│   ├── README.md                #   部署结果、ROS2 接口、WSL 运行步骤、与真机的差距
+│   ├── anymal_core.py           #   核心：关节映射 / 观测拼装 / 动作转换（真机复用的唯一文件）
+│   ├── anymal_plant.py          #   MuJoCo 被控对象（200 Hz 物理）
+│   ├── closed_loop.py           #   本地闭环评估：延迟容限、估计噪声、时序
+│   ├── ros2_policy_node.py      #   ROS2 策略节点（50 Hz）
+│   ├── ros2_sim_node.py         #   ROS2 被控对象节点（MuJoCo 模拟真机）
+│   └── deploy_eval.csv          #   部署评估原始数据
 ├── assets/
 │   ├── curve_reward.png         # 训练曲线：总奖励
 │   ├── curve_track_lin_vel.png  # 训练曲线：速度跟踪
@@ -299,6 +355,7 @@ anymal_rl_project/
 │   ├── mujoco_walking.png       # MuJoCo sim2sim 行走
 │   ├── robustness_curve.png     # 鲁棒性衰减曲线（原始策略）
 │   ├── robustness_ablation.png  # 消融对比：原始 vs 抗扰动训练
+│   ├── deployment_limits.png    # 部署边界：观测延迟容限 + 估计噪声敏感性
 │   ├── rough_terrain.png        # 崎岖地形行走（静帧）
 │   ├── rough_terrain_walk.mp4   # 崎岖地形行走视频
 │   └── sim2sim.mp4              # sim2sim 视频（20 秒行走）
@@ -319,7 +376,8 @@ anymal_rl_project/
 | 换地形还能用吗？ | 同一配置直接在崎岖地形（观测 48 → 235，加入地形高度扫描）从头训练即可，平均存活率达标称的 88%；但**平地权重无法直接迁移**（输入层维度不匹配，且平地策略缺乏地形感知） |
 | sim2sim 里最大的误差来源？ | 执行器模型：训练用 ActuatorNet LSTM，验证只能用 PD 近似（kp=120/kd=5） |
 | 为什么不直接在 Linux 上做？ | 目标机器只有 Windows；WSL2 已被官方确认不支持 Isaac Sim（GPU 设备创建失败），因此走 Windows 原生 + 官方验证驱动 580.88 |
-| 上真机还差什么？ | ① ROS2 节点与 50 Hz 实时控制 ② 真机状态估计（速度/重力方向） ③ 执行器力矩接口与安全限幅 |
+| 上真机还差什么？ | ① **ROS2 实时控制已就绪**（50 Hz，整环 p99 1.2 ms，占周期 6%）② **状态估计**：`base_lin_vel` 真机无法直接测量，需估计器 —— 已量化误差敏感性（σ=0.1 m/s 即掉 6.7% 存活）③ 执行器力矩接口与安全限幅（Isaac 用 ActuatorNet LSTM，真机是 ANYdrive）④ 硬件本身 |
+| 部署的最大风险是什么？ | **观测延迟**：实测 60 ms 内无退化、80 ms 起摔倒率 27%、160 ms 完全失效 —— 因此"控制周期 + 感知/估计链路"总延迟必须压到 60 ms 内 |
 
 ---
 
