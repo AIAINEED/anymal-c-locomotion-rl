@@ -1,0 +1,29 @@
+# 依赖说明
+#
+# 本项目分两部分：
+#   A. 训练部分 —— 运行在 Isaac Sim 5.1 自带的 Python 环境里（随 Isaac Sim 安装，
+#      不要单独 pip 安装 isaacsim / torch，否则会和 Kit 的原生库冲突）
+#   B. 验证部分 —— export_onnx.py 与 anymal_sim2sim.py，只依赖下面这些包
+#
+# 安装（Windows，用 Isaac Sim 自带 Python，走清华镜像）：
+#   E:\IsaacLab\_isaac_sim\kit\python\python.exe -m pip install -r requirements.txt
+
+# --- 训练侧（由 Isaac Lab 的安装脚本负责，这里仅记录版本）---
+# isaacsim[all,extscache]==5.1.0     # 或用 Isaac Sim 5.1 二进制版
+# torch==2.7.0+cu128
+# torchvision==0.22.0+cu128
+# rsl-rl-lib==3.1.2                  # 若用 rsl_rl（本项目实际用 skrl）
+# skrl                               # PPO 实现（Isaac Lab 支持 skrl）
+# tensorboard>=2.21
+
+# --- 验证侧（本项目核心依赖）---
+numpy==2.5.3
+mujoco==3.14.0
+onnxruntime==1.30.0
+onnx>=1.17
+imageio==2.38.0
+imageio-ffmpeg==0.6.0
+
+# 注意 1：pillow 必须保持 11.3.0（Isaac Lab 的硬性要求，装 mujoco 时会被 pip 升到 12.x）
+#         E:\IsaacLab\_isaac_sim\kit\python\python.exe -m pip install "pillow==11.3.0"
+# 注意 2：onnx / onnxruntime 用于导出与数值验证；sim2sim 只需要 onnxruntime
